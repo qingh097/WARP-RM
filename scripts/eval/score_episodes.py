@@ -360,12 +360,18 @@ def main():
         def _flush_gpu_batch() -> None:
             if not buffer_feats:
                 return
+            text_list = None
+            if getattr(model, "lang_dim", 0):
+                from warp_rm.utils.text import embed_tasks
+                emb = embed_tasks([getattr(e, "task", None) or "" for e in buffer_eps], device)
+                text_list = [emb[getattr(e, "task", None) or ""] for e in buffer_eps]
             results = bulk_dense_inference(
                 model, buffer_feats, device,
                 window_size=args.window_size,
                 standard_feat_steps=standard_feat_steps,
                 gpu_batch_size=args.gpu_batch_size,
                 want_abs=enhanced,
+                text_list=text_list,
             )
             for gi, ep, (abs_prog, vel, abs_metrics) in zip(buffer_global_idx, buffer_eps, results):
                 summary = episode_velocity_summary(vel)

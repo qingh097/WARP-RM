@@ -83,7 +83,11 @@ def load_checkpoint(checkpoint_path: str, device: torch.device,
     # legacy ckpts → default to 'causal' for back-compat.
     attention_mode = ckpt.get("attention", "causal")
     use_causal = attention_mode != "bidirectional"
+    lang_dim = int(ckpt["model"]["lang_proj.weight"].shape[1]) if "lang_proj.weight" in state_keys else 0
+    if lang_dim:
+        print(f"  language-conditioned checkpoint (lang_dim={lang_dim})")
     model = TransformerAggregator(
+        lang_dim=lang_dim,
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         dropout=dropout, max_seq_len=max_seq_len,
         backbone_dim=backbone_dim,

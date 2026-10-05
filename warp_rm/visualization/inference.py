@@ -27,6 +27,7 @@ def dense_inference_relative(
     window_size: int = 20,
     standard_feat_steps: int = 15,
     batch_size: int = 512,
+    text: torch.Tensor | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Reconstruct absolute progress from relative model predictions.
@@ -78,7 +79,7 @@ def dense_inference_relative(
         batch_fi = all_fi[bi:bi + batch_size]
         batch_feat = np.stack([feat_arr[fi] for fi in batch_fi])
         feats_t = torch.from_numpy(batch_feat).float().to(device)
-        out = model(feats_t)
+        out = model(feats_t, text=(text.expand(feats_t.shape[0], -1) if text is not None else None))
         preds = (out[0] if isinstance(out, tuple) else out).cpu().numpy()
         all_preds.append(preds)
 
@@ -307,6 +308,7 @@ def dense_inference_delta(
     label_anchor_frames: int = 15,
     feature_stride: int = 3,
     batch_size: int = 512,
+    text: torch.Tensor | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Dense inference for delta-labeled models.
 
@@ -337,7 +339,7 @@ def dense_inference_delta(
         batch_fi = all_fi[bi:bi + batch_size]
         batch_feat = np.stack([feat_arr[fi] for fi in batch_fi])
         feats_t = torch.from_numpy(batch_feat).float().to(device)
-        out = model(feats_t)
+        out = model(feats_t, text=(text.expand(feats_t.shape[0], -1) if text is not None else None))
         preds = (out[0] if isinstance(out, tuple) else out).cpu().numpy()
         all_preds.append(preds)
     delta_preds = np.concatenate(all_preds, axis=0)
@@ -400,6 +402,7 @@ def _forward_batch(
     batch_feat_np: np.ndarray,
     device: torch.device,
     want_abs: bool,
+    text: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Run one model forward pass and extract rel + (optionally) abs outputs.
 
@@ -407,7 +410,8 @@ def _forward_batch(
     ``want_abs`` and the model has the abs head. All values are numpy on CPU.
     """
     feats_t = torch.from_numpy(batch_feat_np).float().to(device)
-    progress_preds, backbone_out, rel_logits = model(feats_t)
+    text_t = torch.from_numpy(np.asarray(text, dtype=np.float32)).to(device) if text is not None else None
+    progress_preds, backbone_out, rel_logits = model(feats_t, text=text_t)
     out: dict[str, np.ndarray] = {"progress_preds": progress_preds.cpu().numpy()}
 
     if not want_abs:
@@ -517,6 +521,7 @@ def bulk_dense_inference(
     standard_feat_steps: int = 15,
     gpu_batch_size: int = 4096,
     want_abs: bool | None = None,
+    text_list: list[np.ndarray] | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]]:
     """Cross-episode batching: pack windows from many episodes into GPU-sized
     batches so the GPU is saturated on every forward pass instead of being
@@ -568,8 +573,9 @@ def bulk_dense_inference(
         for local_i, (ep_idx, w_idx) in enumerate(owners_this_batch):
             fi = plans[ep_idx][0][w_idx]
             batch_feats[local_i] = feat_list[ep_idx][fi]
-
-        out = _forward_batch(model, batch_feats, device, want_abs)
+        batch_text = (np.stack([text_list[ep_idx] for (ep_idx, _w) in owners_this_batch])
+                      if text_list is not None else None)
+        out = _forward_batch(model, batch_feats, device, want_abs, text=batch_text)
         # We'd like to scatter now by episode. Group local indices by owner episode.
         by_ep: dict[int, list[int]] = {}
         for local_i, (ep_idx, _w_idx) in enumerate(owners_this_batch):
@@ -619,6 +625,7 @@ def dense_inference_absolute(
     window_size: int = 20,
     standard_feat_steps: int = 15,
     batch_size: int = 512,
+    text: torch.Tensor | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Dense inference using the absolute progress head and C51 uncertainty metrics.
@@ -677,7 +684,7 @@ def dense_inference_absolute(
         feats_t = torch.from_numpy(batch_feat).float().to(device)
 
         # Forward: get backbone_out and rel_logits
-        _, backbone_out, rel_logits = model(feats_t)
+        _, backbone_out, rel_logits = model(feats_t, text=(text.expand(feats_t.shape[0], -1) if text is not None else None))
 
         # Absolute progress: C51 softmax expectation
         abs_logits = model.abs_progress_head(backbone_out)  # (B, T, n_abs_bins)
