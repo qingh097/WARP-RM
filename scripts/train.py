@@ -381,6 +381,7 @@ def build_model(ablation: AblationConfig, d_model: int, device: torch.device,
     """
     backbone_dim = d_model * n_cameras if fusion == "concat" else d_model
     model = TransformerAggregator(
+        lang_dim=(512 if os.environ.get("WARP_LANG_COND", "0") == "1" else 0),
         d_model=d_model, n_heads=N_HEADS, n_layers=N_LAYERS,
         dropout=DROPOUT, max_seq_len=MAX_SEQ_LEN,
         backbone_dim=backbone_dim,
@@ -796,6 +797,40 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
             cameras=precompute_cameras,
             crop_mode=crop_mode,
         )
+        # ---- visual augmentation: K extra feature caches per episode ----
+        _n_aug = int(os.environ.get("WARP_AUG_VARIANTS", "0"))
+        for _k in range(_n_aug):
+            _m = precompute_features(
+                episodes_for_precompute, backbone, device,
+                feat_stride, IMAGE_SIZE, cache_dir=cache_dir,
+                backbone=BACKBONE, batch_size=PRECACHE_BATCH_SIZE,
+                mean=backbone.MEAN, std=backbone.STD,
+                decode_workers=PRECACHE_DECODE_WORKERS,
+                mega_batch_episodes=PRECACHE_MEGA_BATCH,
+                cameras=precompute_cameras,
+                crop_mode=crop_mode, aug_tag=str(_k),
+            )
+            for _p, _v in _m.items():
+                ep_meta.setdefault(_p, {}).setdefault("aug_cache_paths", []).append(_v["cache_path"])
+        if _n_aug:
+            print(f"[aug] {_n_aug} augmented feature cache(s) per episode; sampled with p={os.environ.get('WARP_AUG_P', '0.5')}")
+        # ---- language condition: frozen CLIP text embedding per task ----
+        if os.environ.get("WARP_LANG_COND", "0") == "1":
+            from transformers import CLIPModel, CLIPTokenizer
+            _tm = os.environ.get("WARP_TEXT_MODEL", "openai/clip-vit-base-patch16")
+            _tok = CLIPTokenizer.from_pretrained(_tm); _clip = CLIPModel.from_pretrained(_tm).to(device).eval()
+            _tasks = sorted({(ep.task or "") for ep in episodes_for_precompute})
+            _emb = {}
+            with torch.no_grad():
+                for _i in range(0, len(_tasks), 64):
+                    _b = _tasks[_i:_i + 64]
+                    _t = _tok(_b, padding=True, truncation=True, max_length=77, return_tensors="pt").to(device)
+                    _e = torch.nn.functional.normalize(_clip.get_text_features(**_t).float(), dim=-1).cpu().numpy()
+                    for _s, _v in zip(_b, _e): _emb[_s] = _v.astype(np.float32)
+            for ep in episodes_for_precompute:
+                ep_meta[str(ep.path)]["text_emb"] = _emb[ep.task or ""]
+            print(f"[lang] {len(_tasks)} unique task strings embedded with {_tm} (dim {next(iter(_emb.values())).shape[0]})")
+            del _clip; torch.cuda.empty_cache()
         torch.cuda.empty_cache()
         precompute_elapsed = time.time() - global_start
         print(f"Precompute: {precompute_elapsed:.0f}s (not counted against budget)")
@@ -806,6 +841,8 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
             return_meta=False,
             feature_stride=feat_stride,
             fusion=fusion,
+            return_text=os.environ.get("WARP_LANG_COND", "0") == "1",
+            aug_p=float(os.environ.get("WARP_AUG_P", "0.5")) if int(os.environ.get("WARP_AUG_VARIANTS", "0")) > 0 else 0.0,
         )
 
         need_weighted = (
@@ -980,6 +1017,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
     # Train
     print("Starting training...")
     trainer = Trainer(
+        lang_cond=(os.environ.get("WARP_LANG_COND", "0") == "1"),
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,

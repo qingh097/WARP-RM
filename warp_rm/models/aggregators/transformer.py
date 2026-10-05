@@ -39,6 +39,7 @@ class TransformerAggregator(nn.Module):
         backbone_dim: int = 768,
         # Temporal diffs
         use_temporal_diffs: bool = True,
+        lang_dim: int = 0,
         # C51 relative progress bins
         n_rel_bins: int = 30,
         rel_bin_min: float = -3.0,
@@ -60,6 +61,11 @@ class TransformerAggregator(nn.Module):
         self.n_layers = n_layers
         self.stochastic_depth_p = stochastic_depth_p
         self.use_temporal_diffs = use_temporal_diffs
+        self.lang_dim = int(lang_dim)
+        if self.lang_dim > 0:
+            # language condition: one extra token (projected text embedding) prepended
+            self.lang_proj = nn.Linear(self.lang_dim, d_model)
+            self.lang_pos = nn.Parameter(torch.zeros(1, 1, d_model))
         self.first_frame_pe_only = first_frame_pe_only
         self.use_causal_attention = use_causal_attention
         self.fusion = fusion
@@ -158,6 +164,7 @@ class TransformerAggregator(nn.Module):
     def forward(
         self,
         features: torch.Tensor,
+        text: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -193,6 +200,11 @@ class TransformerAggregator(nn.Module):
             x = x + self.pos_embed[:, :T, :]
             seq_len = T
 
+        has_lang = self.lang_dim > 0 and text is not None
+        if has_lang:
+            tok = self.lang_proj(text.float().to(x.device)).unsqueeze(1) + self.lang_pos  # (B,1,d)
+            x = torch.cat([tok, x], dim=1)
+            seq_len = seq_len + 1
         if self.use_causal_attention:
             mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=features.device)
             is_causal = True
@@ -211,6 +223,8 @@ class TransformerAggregator(nn.Module):
 
         # Tokens mode: mean-pool the N camera tokens at each timestep so the
         # per-timestep heads see one (B, T, d_model) feature per timestep.
+        if has_lang:
+            x = x[:, 1:]  # drop the language token before the per-timestep heads
         if tokens_mode:
             x = x.reshape(B, T, N, self.d_model).mean(dim=2)  # (B, T, d_model)
 

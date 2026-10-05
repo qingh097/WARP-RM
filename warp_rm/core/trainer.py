@@ -83,7 +83,9 @@ class Trainer:
         label_mode: str = "relative",
         label_anchor_frames: int = 15,
         run_logger: RunLogger | None = None,
+        lang_cond: bool = False,
     ):
+        self.lang_cond = lang_cond
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -172,6 +174,7 @@ class Trainer:
             # Remaining tensors appear in order: abs_labels?, completion?
             # — same order the dataset appended them.
             extras = list(batch[2:])
+            text = extras.pop().to(self.device) if (self.lang_cond and extras) else None
             if uses_abs and extras:
                 abs_labels = extras.pop(0).to(self.device)
             if self.loss_fn.completion_weight > 0 and extras:
@@ -192,12 +195,12 @@ class Trainer:
             # ── Forward ─────────────────────────────────────────────────────
             if self.ablation.is_baseline:
                 # Original WARP-RM: returns (B, T) only
-                rewards = self.model(features)
+                rewards = self.model(features, text=text)
                 progress_preds = rewards
                 backbone_out = None
                 rel_logits = None
             else:
-                progress_preds, backbone_out, rel_logits = self.model(features)
+                progress_preds, backbone_out, rel_logits = self.model(features, text=text)
 
             # ── Loss ────────────────────────────────────────────────────────
             current_lr = self.optimizer.param_groups[0]["lr"]
@@ -344,9 +347,9 @@ class Trainer:
                 labels = torch.tensor([labels_np], dtype=torch.float32).to(self.device)
 
                 if self.ablation.is_baseline:
-                    preds = self.model(features)
+                    preds = self.model(features, text=self._text_for(ep, features.shape[0]))
                 else:
-                    preds, _, _ = self.model(features)
+                    preds, _, _ = self.model(features, text=self._text_for(ep, features.shape[0]))
 
                 loss_val = F.huber_loss(preds, labels, delta=0.01).item()
                 tracker.update(preds[0].cpu().numpy(), labels_np, is_mid, loss_val)
@@ -355,6 +358,16 @@ class Trainer:
         metrics = self._dense_scan_spearman(metrics)
         metrics.print_summary()
         return metrics
+
+    def _text_for(self, ep, n: int = 1):
+        if not getattr(self, "lang_cond", False):
+            return None
+        meta = self.ep_meta[str(ep.path)] if self.ep_meta else {}
+        emb = meta.get("text_emb")
+        if emb is None:
+            return None
+        t = torch.from_numpy(np.asarray(emb, dtype=np.float32)).to(self.device).unsqueeze(0)
+        return t.expand(n, -1)
 
     def _dense_scan_trace(self, ep, std_step: int) -> tuple[np.ndarray, np.ndarray, int]:
         """Run a forward-only dense sliding-window scan on one episode with the
@@ -383,9 +396,9 @@ class Trainer:
             else:
                 feats = torch.from_numpy(feat_arr[fi]).float().unsqueeze(0).to(self.device)
             if self.ablation.is_baseline:
-                ps = self.model(feats)[0].cpu().numpy()
+                ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0].cpu().numpy()
             else:
-                ps = self.model(feats)[0][0].cpu().numpy()
+                ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0][0].cpu().numpy()
             for j, fj in enumerate(fi):
                 if fj < n_feat:
                     raw_preds[fj] += ps[j]
@@ -427,9 +440,9 @@ class Trainer:
                 else:
                     feats = torch.from_numpy(feat_arr[fi]).float().unsqueeze(0).to(self.device)
                 if self.ablation.is_baseline:
-                    ps = self.model(feats)[0].cpu().numpy()
+                    ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0].cpu().numpy()
                 else:
-                    ps = self.model(feats)[0][0].cpu().numpy()
+                    ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0][0].cpu().numpy()
                 if np.std(ps) < 1e-8 or np.std(labels) < 1e-8:
                     continue
                 sp, _ = spearmanr(ps, labels)

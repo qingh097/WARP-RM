@@ -70,7 +70,7 @@ def _ep_camera_video(ep: Episode, camera: str | None) -> tuple[Path, int]:
 
 def _ep_cache_key_stable(ep: Episode, backbone: str, feature_stride: int,
                          camera: str | None = None,
-                         crop_mode: str = "squash") -> str:
+                         crop_mode: str = "squash", aug_tag: str | None = None) -> str:
     """Path-stable hash: same key regardless of mount prefix.
 
     Shared caches across machines (local ~/.cache vs cloud /data) resolve
@@ -103,6 +103,8 @@ def _ep_cache_key_stable(ep: Episode, backbone: str, feature_stride: int,
         rel += f"@{frame_offset}"
     if crop_mode and crop_mode != "squash":
         rel += f"#{crop_mode}"
+    if aug_tag:
+        rel += f"#aug{aug_tag}"   # augmented variants get their own cache files
     return hashlib.md5(f"{rel}:{backbone}:{feature_stride}".encode()).hexdigest()[:12]
 
 
@@ -116,8 +118,13 @@ def _ep_cache_key_legacy(ep: Episode, backbone: str, feature_stride: int,
 
 
 def _ep_cache_path(cache_dir: str, ep: Episode, backbone: str,
+                   *_a, aug_tag: str | None = None, **_k):
+    return _ep_cache_path_impl(cache_dir, ep, backbone, *_a, aug_tag=aug_tag, **_k)
+
+
+def _ep_cache_path_impl(cache_dir: str, ep: Episode, backbone: str,
                    feature_stride: int, camera: str | None = None,
-                   crop_mode: str = "squash") -> Path:
+                   crop_mode: str = "squash", aug_tag: str | None = None) -> Path:
     """Return the cache path for an episode (optionally for a specific camera).
 
     Layout: <cache_dir>/<dataset_name>/<key>.npy. Dataset namespace prevents
@@ -140,7 +147,7 @@ def _ep_cache_path(cache_dir: str, ep: Episode, backbone: str,
     cdir = Path(cache_dir)
     vpath, _ = _ep_camera_video(ep, camera)
     dataset = _dataset_name_from_video_path(vpath)
-    stable_key = _ep_cache_key_stable(ep, backbone, feature_stride, camera, crop_mode)
+    stable_key = _ep_cache_key_stable(ep, backbone, feature_stride, camera, crop_mode, aug_tag)
     namespaced = cdir / dataset / f"{stable_key}.npy"
     if namespaced.exists():
         return namespaced
@@ -157,10 +164,40 @@ def _ep_cache_path(cache_dir: str, ep: Episode, backbone: str,
     return namespaced
 
 
+def _make_episode_aug(ep: Episode, aug_tag: str):
+    """Per-episode-CONSISTENT visual augmentation (same params on every frame so
+    the motion signal is untouched): colour jitter, random crop/scale, optional
+    blur / grayscale. Deterministic in (episode path, aug_tag)."""
+    import hashlib, cv2
+    seed = int(hashlib.md5(f"{ep.path}#{aug_tag}".encode()).hexdigest()[:8], 16)
+    rng = np.random.RandomState(seed)
+    bright = rng.uniform(0.7, 1.3); contrast = rng.uniform(0.7, 1.3); sat = rng.uniform(0.6, 1.4)
+    gains = rng.uniform(0.92, 1.08, size=3)          # mild per-channel colour cast
+    scale = rng.uniform(0.75, 1.0); ox, oy = rng.uniform(0, 1), rng.uniform(0, 1)
+    blur = rng.rand() < 0.3; gray = rng.rand() < 0.1
+    def f(frame):
+        h, w = frame.shape[:2]; ch, cw = int(h * scale), int(w * scale)
+        y0, x0 = int((h - ch) * oy), int((w - cw) * ox)
+        frame = frame[y0:y0 + ch, x0:x0 + cw]
+        x = frame.astype(np.float32)
+        if gray:
+            g = x.mean(axis=2, keepdims=True); x = np.repeat(g, 3, axis=2)
+        else:
+            m = x.mean(axis=2, keepdims=True); x = m + (x - m) * sat
+        x = x * gains
+        x = (x - x.mean()) * contrast + x.mean()
+        x = x * bright
+        x = np.clip(x, 0, 255).astype(np.uint8)
+        if blur:
+            x = cv2.GaussianBlur(x, (5, 5), 0)
+        return x
+    return f
+
+
 def _decode_episode(ep: Episode, feature_stride: int, image_size: int,
                     mean: np.ndarray, std: np.ndarray,
                     camera: str | None = None,
-                    crop_mode: str = "squash") -> np.ndarray:
+                    crop_mode: str = "squash", aug_tag: str | None = None) -> np.ndarray:
     """Decode + preprocess all strided frames for one episode. Returns (N, C, H, W).
 
     ``camera`` selects which camera's video + frame_offset to decode. None ==
@@ -173,9 +210,11 @@ def _decode_episode(ep: Episode, feature_stride: int, image_size: int,
     # Apply per-camera frame_offset for v3.0 concatenated videos
     abs_indices = [i + frame_offset for i in frame_indices] if frame_offset else frame_indices
     frames_raw = read_frames(video_path, abs_indices)
-
+    aug = _make_episode_aug(ep, aug_tag) if aug_tag else None
     processed = []
     for frame in frames_raw:
+        if aug is not None:
+            frame = aug(frame)
         frame = resize_frame(frame, image_size, crop_mode)
         frame = frame.astype(np.float32) / 255.0
         frame = (frame - mean) / std
@@ -199,6 +238,7 @@ def _precompute_one_camera(
     mega_batch_episodes: int,
     camera: str | None = None,
     crop_mode: str = "squash",
+    aug_tag: str | None = None,
 ) -> dict:
     """Extract + cache ONE camera's features. Returns
     {str(ep.path): {"cache_path", "n_frames", "n_feat"}}.
@@ -219,7 +259,7 @@ def _precompute_one_camera(
 
     ep_meta, to_extract = {}, []
     for ep in episodes:
-        cp = _ep_cache_path(cache_dir, ep, backbone, feature_stride, camera, crop_mode)
+        cp = _ep_cache_path(cache_dir, ep, backbone, feature_stride, camera, crop_mode, aug_tag=aug_tag)
         if cp.exists():
             n_feat = int(np.load(str(cp), mmap_mode="r").shape[0])
             ep_meta[str(ep.path)] = {
@@ -249,7 +289,7 @@ def _precompute_one_camera(
     def _decode_chunk(chunk_eps):
         """Parallel-decode all episodes in a chunk. Returns list of (N,C,H,W) arrays."""
         futures = {
-            pool.submit(_decode_episode, ep, feature_stride, image_size, mean, std, camera, crop_mode): i
+            pool.submit(_decode_episode, ep, feature_stride, image_size, mean, std, camera, crop_mode, aug_tag): i
             for i, ep in enumerate(chunk_eps)
         }
         decoded = [None] * len(chunk_eps)
@@ -312,7 +352,7 @@ def _precompute_one_camera(
         offset = 0
         for i, ep in enumerate(chunk_eps):
             n_feat = frame_counts[i]
-            cp = _ep_cache_path(cache_dir, ep, backbone, feature_stride, camera, crop_mode)
+            cp = _ep_cache_path(cache_dir, ep, backbone, feature_stride, camera, crop_mode, aug_tag=aug_tag)
             np.save(str(cp), all_features[offset:offset + n_feat])
             offset += n_feat
             ep_meta[str(ep.path)] = {
@@ -350,6 +390,7 @@ def precompute_features(
     mega_batch_episodes: int = 8,
     cameras: list[str] | None = None,
     crop_mode: str = "squash",
+    aug_tag: str | None = None,
 ) -> dict:
     """
     Pre-extract backbone features to disk; skips already-cached episodes.
@@ -388,7 +429,7 @@ def precompute_features(
         per_camera_meta.append(_precompute_one_camera(
             episodes, encoder, device, feature_stride, image_size, cache_dir,
             backbone, batch_size, mean, std, decode_workers, mega_batch_episodes,
-            camera=cam, crop_mode=crop_mode,
+            camera=cam, crop_mode=crop_mode, aug_tag=aug_tag,
         ))
 
     # Merge per-camera metas into one ep_meta carrying cache_paths.

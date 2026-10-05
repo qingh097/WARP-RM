@@ -290,6 +290,7 @@ def discover_lerobot_episodes(
             # Single-camera (len==1) leaves this as a one-entry dict; downstream
             # caching/_ep_camera_video treats camera=None identically anyway.
             camera_videos=camera_videos,
+            task=((ep_meta.get("tasks") or [None])[0] if isinstance(ep_meta.get("tasks"), list) else ep_meta.get("tasks")),
         ))
 
         if n is not None and len(episodes) >= n:

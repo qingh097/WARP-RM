@@ -44,6 +44,7 @@ class Episode:
     # concatenated videos different cameras can have different from_timestamps.
     # None / empty means single-camera legacy behavior (use video_path).
     camera_videos: Optional[dict] = None
+    task: Optional[str] = None  # language condition (from episodes.jsonl tasks[0])
 
     def read_frames(self, indices):
         if self.frame_offset:
@@ -272,7 +273,11 @@ class PrecomputedFeatureDataset(Dataset):
         return_meta: bool = False,
         feature_stride: int = 3,
         fusion: str = "concat",
+        return_text: bool = False,
+        aug_p: float = 0.0,
     ):
+        self.return_text = return_text   # append ep_meta["text_emb"] as the LAST batch element
+        self.aug_p = aug_p               # prob. of loading an augmented feature cache instead of the clean one
         self.episodes = episodes
         self.ep_meta = ep_meta
         self.sampler = sampler
@@ -304,7 +309,11 @@ class PrecomputedFeatureDataset(Dataset):
         )
 
         # 3. Load features from disk (fusing N cameras when multi-cam).
-        feat_arr = load_fused_features(meta, self.fusion)
+        augs = meta.get("aug_cache_paths")
+        if augs and self.aug_p > 0 and not self.eval_mode and random.random() < self.aug_p:
+            feat_arr = np.load(random.choice(augs))
+        else:
+            feat_arr = load_fused_features(meta, self.fusion)
         features = feat_arr[feat_indices].copy()
 
         out: list = [
@@ -333,6 +342,8 @@ class PrecomputedFeatureDataset(Dataset):
             out.append(torch.tensor(idx % len(self.episodes), dtype=torch.long))
             out.append(torch.tensor(feat_indices, dtype=torch.int32))
 
+        if self.return_text:
+            out.append(torch.from_numpy(np.asarray(meta["text_emb"], dtype=np.float32)))
         return tuple(out)
 
 
