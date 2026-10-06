@@ -97,6 +97,7 @@ def render_episode(
     out_fps: float = 15.0,
     show_gt: bool = False,
     crop_mode: str = "squash",
+    text=None,
 ):
     """
     Full rendering pipeline: features -> dense inference -> video with plots.
@@ -137,6 +138,7 @@ def render_episode(
         model, feat_arr, device,
         window_size=window_size,
         standard_feat_steps=standard_feat_steps,
+        text=text,
     )
 
     # Check if model has abs_progress_head for enhanced rendering
@@ -148,6 +150,7 @@ def render_episode(
             model, feat_arr, device,
             window_size=window_size,
             standard_feat_steps=standard_feat_steps,
+            text=text,
         )
 
     # 2. Interpolate to source-frame resolution

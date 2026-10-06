@@ -188,6 +188,8 @@ class Args:
     """Include ground truth row (linear 0->1)."""
 
     sort_by: Literal["length", "name"] = "length"
+    task: Optional[str] = None
+    """Task text for language-conditioned checkpoints (applied to every rendered episode)."""
     """How to sort/select episodes."""
 
     gpu: Optional[int] = None
@@ -204,6 +206,14 @@ def main():
 
     # Load model
     model, ckpt = load_checkpoint(args.checkpoint, device)
+    text_t = None
+    if getattr(model, "lang_dim", 0):
+        from warp_rm.utils.text import embed_tasks
+        _task = args.task or ""
+        if not args.task:
+            print("  WARNING: language-conditioned checkpoint but no --task given; using empty text")
+        text_t = torch.from_numpy(embed_tasks([_task], device)[_task]).to(device).unsqueeze(0)
+        print(f"  task text: {_task!r}")
 
     source_standard_stride = ckpt.get("standard_stride_src", 45)
     crop_mode = ckpt.get("crop_mode", "squash")
@@ -298,6 +308,7 @@ def main():
                 out_fps=args.fps,
                 show_gt=args.show_gt,
                 crop_mode=crop_mode,
+                text=text_t,
             )
         except Exception as e:
             import traceback
