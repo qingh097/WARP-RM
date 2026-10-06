@@ -358,6 +358,17 @@ class Args:
     Requires `uv sync --extra wandb` and being logged in (`wandb login`)."""
 
 
+def _clip_text_embeds(clip, out):
+    """transformers<5 returns a tensor; >=5 returns BaseModelOutputWithPooling."""
+    import torch as _torch
+    if _torch.is_tensor(out):
+        return out
+    te = getattr(out, "text_embeds", None)
+    if te is not None:
+        return te
+    return clip.text_projection(out.pooler_output)
+
+
 def build_model(ablation: AblationConfig, d_model: int, device: torch.device,
                 first_frame_pe_only: bool = False,
                 rel_bin_min: float = -3.0,
@@ -825,7 +836,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
                 for _i in range(0, len(_tasks), 64):
                     _b = _tasks[_i:_i + 64]
                     _t = _tok(_b, padding=True, truncation=True, max_length=77, return_tensors="pt").to(device)
-                    _e = torch.nn.functional.normalize(_clip.get_text_features(**_t).float(), dim=-1).cpu().numpy()
+                    _e = torch.nn.functional.normalize(_clip_text_embeds(_clip, _clip.get_text_features(**_t)).float(), dim=-1).cpu().numpy()
                     for _s, _v in zip(_b, _e): _emb[_s] = _v.astype(np.float32)
             for ep in episodes_for_precompute:
                 ep_meta[str(ep.path)]["text_emb"] = _emb[ep.task or ""]
