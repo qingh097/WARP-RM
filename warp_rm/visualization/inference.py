@@ -403,6 +403,7 @@ def _forward_batch(
     device: torch.device,
     want_abs: bool,
     text: np.ndarray | None = None,
+    demos: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Run one model forward pass and extract rel + (optionally) abs outputs.
 
@@ -411,7 +412,8 @@ def _forward_batch(
     """
     feats_t = torch.from_numpy(batch_feat_np).float().to(device)
     text_t = torch.from_numpy(np.asarray(text, dtype=np.float32)).to(device) if text is not None else None
-    progress_preds, backbone_out, rel_logits = model(feats_t, text=text_t)
+    demos_t = torch.from_numpy(np.asarray(demos, dtype=np.float32)).to(device) if demos is not None else None
+    progress_preds, backbone_out, rel_logits = model(feats_t, text=text_t, demos=demos_t)
     out: dict[str, np.ndarray] = {"progress_preds": progress_preds.cpu().numpy()}
 
     if not want_abs:
@@ -522,6 +524,7 @@ def bulk_dense_inference(
     gpu_batch_size: int = 4096,
     want_abs: bool | None = None,
     text_list: list[np.ndarray] | None = None,
+    demo_list: list[np.ndarray] | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]]:
     """Cross-episode batching: pack windows from many episodes into GPU-sized
     batches so the GPU is saturated on every forward pass instead of being
@@ -576,7 +579,9 @@ def bulk_dense_inference(
             batch_feats[local_i] = feat_list[ep_idx][fi]
         batch_text = (np.stack([text_list[ep_idx] for (ep_idx, _w) in owners_this_batch])
                       if text_list is not None else None)
-        out = _forward_batch(model, batch_feats, device, want_abs, text=batch_text)
+        batch_demos = (np.stack([demo_list[ep_idx] for (ep_idx, _w) in owners_this_batch])
+                       if demo_list is not None else None)
+        out = _forward_batch(model, batch_feats, device, want_abs, text=batch_text, demos=batch_demos)
         # We'd like to scatter now by episode. Group local indices by owner episode.
         by_ep: dict[int, list[int]] = {}
         for local_i, (ep_idx, _w_idx) in enumerate(owners_this_batch):
