@@ -568,7 +568,8 @@ def bulk_dense_inference(
     while cursor < total:
         end = min(cursor + gpu_batch_size, total)
         # Assemble the batch's feature tensor + track per-item ownership.
-        batch_feats = np.empty((end - cursor, N, feat_list[0].shape[1]), dtype=feat_list[0].dtype)
+        # trailing dims may be (D,) for single/concat features or (n_cam, D) for tokens fusion
+        batch_feats = np.empty((end - cursor, N) + tuple(feat_list[0].shape[1:]), dtype=feat_list[0].dtype)
         owners_this_batch: list[tuple[int, int]] = flat_owner[cursor:end]
         for local_i, (ep_idx, w_idx) in enumerate(owners_this_batch):
             fi = plans[ep_idx][0][w_idx]
