@@ -337,7 +337,9 @@ class PrecomputedFeatureDataset(Dataset):
         # 3. Load features from disk (fusing N cameras when multi-cam).
         augs = meta.get("aug_cache_paths")
         if augs and self.aug_p > 0 and not self.eval_mode and random.random() < self.aug_p:
-            feat_arr = np.load(random.choice(augs))
+            _c = random.choice(augs)
+            feat_arr = (load_fused_features({"cache_paths": list(_c)}, self.fusion) if isinstance(_c, (list, tuple))
+                        else np.load(_c))
         else:
             feat_arr = load_fused_features(meta, self.fusion)
         features = feat_arr[feat_indices].copy()

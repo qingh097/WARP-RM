@@ -824,7 +824,8 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
                 crop_mode=crop_mode, aug_tag=str(_k),
             )
             for _p, _v in _m.items():
-                ep_meta.setdefault(_p, {}).setdefault("aug_cache_paths", []).append(_v["cache_path"])
+                # single-cam: a path; multi-cam: the per-camera list (fused at load time like the clean caches)
+                ep_meta.setdefault(_p, {}).setdefault("aug_cache_paths", []).append(_v.get("cache_paths") or _v["cache_path"])
         if _n_aug:
             print(f"[aug] {_n_aug} augmented feature cache(s) per episode; sampled with p={os.environ.get('WARP_AUG_P', '0.5')}")
         # ---- language condition: frozen CLIP text embedding per task ----
