@@ -84,8 +84,12 @@ class Trainer:
         label_anchor_frames: int = 15,
         run_logger: RunLogger | None = None,
         lang_cond: bool = False,
+        demo_cond: bool = False,
+        demo_dropout: float = 0.5,
+        demo_index: dict | None = None,
     ):
         self.lang_cond = lang_cond
+        self.demo_cond = demo_cond; self.demo_dropout = float(demo_dropout); self.demo_index = demo_index or {}
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -175,6 +179,9 @@ class Trainer:
             # — same order the dataset appended them.
             extras = list(batch[2:])
             text = extras.pop().to(self.device) if (self.lang_cond and extras) else None
+            demos = extras.pop().to(self.device) if (self.demo_cond and extras) else None
+            if demos is not None and random.random() < self.demo_dropout:
+                demos = None   # demo dropout: the model must also work from text / frames alone
             if uses_abs and extras:
                 abs_labels = extras.pop(0).to(self.device)
             if self.loss_fn.completion_weight > 0 and extras:
@@ -195,12 +202,12 @@ class Trainer:
             # ── Forward ─────────────────────────────────────────────────────
             if self.ablation.is_baseline:
                 # Original WARP-RM: returns (B, T) only
-                rewards = self.model(features, text=text)
+                rewards = self.model(features, text=text, demos=demos)
                 progress_preds = rewards
                 backbone_out = None
                 rel_logits = None
             else:
-                progress_preds, backbone_out, rel_logits = self.model(features, text=text)
+                progress_preds, backbone_out, rel_logits = self.model(features, text=text, demos=demos)
 
             # ── Loss ────────────────────────────────────────────────────────
             current_lr = self.optimizer.param_groups[0]["lr"]
@@ -347,9 +354,9 @@ class Trainer:
                 labels = torch.tensor([labels_np], dtype=torch.float32).to(self.device)
 
                 if self.ablation.is_baseline:
-                    preds = self.model(features, text=self._text_for(ep, features.shape[0]))
+                    preds = self.model(features, text=self._text_for(ep, features.shape[0]), demos=self._demos_for(ep, features.shape[0]))
                 else:
-                    preds, _, _ = self.model(features, text=self._text_for(ep, features.shape[0]))
+                    preds, _, _ = self.model(features, text=self._text_for(ep, features.shape[0]), demos=self._demos_for(ep, features.shape[0]))
 
                 loss_val = F.huber_loss(preds, labels, delta=0.01).item()
                 tracker.update(preds[0].cpu().numpy(), labels_np, is_mid, loss_val)
@@ -358,6 +365,16 @@ class Trainer:
         metrics = self._dense_scan_spearman(metrics)
         metrics.print_summary()
         return metrics
+
+    def _demos_for(self, ep, n: int = 1):
+        if not getattr(self, "demo_cond", False) or not self.ep_meta:
+            return None
+        from ..data.dataset import build_demo_tokens
+        import random as _r
+        toks = build_demo_tokens(ep, self.ep_meta, self.demo_index, self.model.demo_k, self.model.demo_m,
+                                 getattr(self.model, "fusion", "concat"), rng=_r.Random(0))
+        t = torch.from_numpy(toks).to(self.device).unsqueeze(0)
+        return t.expand(n, -1, -1)
 
     def _text_for(self, ep, n: int = 1):
         if not getattr(self, "lang_cond", False):
@@ -396,9 +413,9 @@ class Trainer:
             else:
                 feats = torch.from_numpy(feat_arr[fi]).float().unsqueeze(0).to(self.device)
             if self.ablation.is_baseline:
-                ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0].cpu().numpy()
+                ps = self.model(feats, text=self._text_for(ep, feats.shape[0]), demos=self._demos_for(ep, feats.shape[0]))[0].cpu().numpy()
             else:
-                ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0][0].cpu().numpy()
+                ps = self.model(feats, text=self._text_for(ep, feats.shape[0]), demos=self._demos_for(ep, feats.shape[0]))[0][0].cpu().numpy()
             for j, fj in enumerate(fi):
                 if fj < n_feat:
                     raw_preds[fj] += ps[j]
@@ -440,9 +457,9 @@ class Trainer:
                 else:
                     feats = torch.from_numpy(feat_arr[fi]).float().unsqueeze(0).to(self.device)
                 if self.ablation.is_baseline:
-                    ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0].cpu().numpy()
+                    ps = self.model(feats, text=self._text_for(ep, feats.shape[0]), demos=self._demos_for(ep, feats.shape[0]))[0].cpu().numpy()
                 else:
-                    ps = self.model(feats, text=self._text_for(ep, feats.shape[0]))[0][0].cpu().numpy()
+                    ps = self.model(feats, text=self._text_for(ep, feats.shape[0]), demos=self._demos_for(ep, feats.shape[0]))[0][0].cpu().numpy()
                 if np.std(ps) < 1e-8 or np.std(labels) < 1e-8:
                     continue
                 sp, _ = spearmanr(ps, labels)

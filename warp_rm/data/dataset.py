@@ -253,6 +253,26 @@ def split_episodes_quality_val(
     return remaining, val_episodes
 
 
+def build_demo_tokens(ep, ep_meta, demo_index, k, m, fusion="concat", rng=None, exclude_self=True):
+    """(k*m, D+2) float32: for k demos of the same task (other episodes), m frames uniformly
+    spanning each demo, each row = [feature (D) | normalised time in demo | demo id]."""
+    rng = rng or random
+    task = getattr(ep, "task", None) or ""
+    cands = [p for p in demo_index.get(task, []) if (not exclude_self or p != str(ep.path)) and p in ep_meta]
+    if not cands:
+        cands = [str(ep.path)]
+    rows = []
+    for di in range(k):
+        p = rng.choice(cands)
+        arr = load_fused_features(ep_meta[p], fusion)
+        if arr.ndim == 3:            # tokens fusion -> use the primary camera for demos
+            arr = arr[:, 0]
+        idx = np.linspace(0, len(arr) - 1, m).round().astype(int)
+        t = (idx / max(len(arr) - 1, 1)).astype(np.float32)
+        rows.append(np.concatenate([arr[idx].astype(np.float32), t[:, None], np.full((m, 1), di, np.float32)], axis=1))
+    return np.concatenate(rows, 0)
+
+
 class PrecomputedFeatureDataset(Dataset):
     """
     Dataset backed by disk-cached backbone features.
@@ -275,7 +295,13 @@ class PrecomputedFeatureDataset(Dataset):
         fusion: str = "concat",
         return_text: bool = False,
         aug_p: float = 0.0,
+        return_demos: bool = False,
+        demo_k: int = 2,
+        demo_m: int = 12,
+        demo_index: dict | None = None,
     ):
+        self.return_demos = return_demos; self.demo_k = int(demo_k); self.demo_m = int(demo_m)
+        self.demo_index = demo_index or {}   # task -> [str(ep.path)] with cached features
         self.return_text = return_text   # append ep_meta["text_emb"] as the LAST batch element
         self.aug_p = aug_p               # prob. of loading an augmented feature cache instead of the clean one
         self.episodes = episodes
@@ -342,6 +368,8 @@ class PrecomputedFeatureDataset(Dataset):
             out.append(torch.tensor(idx % len(self.episodes), dtype=torch.long))
             out.append(torch.tensor(feat_indices, dtype=torch.int32))
 
+        if self.return_demos:
+            out.append(torch.from_numpy(build_demo_tokens(ep, self.ep_meta, self.demo_index, self.demo_k, self.demo_m, self.fusion)))
         if self.return_text:
             out.append(torch.from_numpy(np.asarray(meta["text_emb"], dtype=np.float32)))
         return tuple(out)

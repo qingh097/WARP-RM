@@ -10,6 +10,7 @@ The aggregator combines:
 import random
 
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,6 +41,9 @@ class TransformerAggregator(nn.Module):
         # Temporal diffs
         use_temporal_diffs: bool = True,
         lang_dim: int = 0,
+        demo_dim: int = 0,
+        demo_k: int = 2,
+        demo_m: int = 12,
         # C51 relative progress bins
         n_rel_bins: int = 30,
         rel_bin_min: float = -3.0,
@@ -62,6 +66,13 @@ class TransformerAggregator(nn.Module):
         self.stochastic_depth_p = stochastic_depth_p
         self.use_temporal_diffs = use_temporal_diffs
         self.lang_dim = int(lang_dim)
+        self.demo_dim = int(demo_dim); self.demo_k = int(demo_k); self.demo_m = int(demo_m)
+        if self.demo_dim > 0:
+            # demo conditioning: k*m tokens = proj(feature) + time(t) + id(demo) + type
+            self.demo_proj = nn.Linear(self.demo_dim, d_model)
+            self.demo_time = nn.Linear(3, d_model)
+            self.demo_id = nn.Embedding(max(1, self.demo_k), d_model)
+            self.demo_type = nn.Parameter(torch.zeros(1, 1, d_model))
         if self.lang_dim > 0:
             # language condition: one extra token (projected text embedding) prepended
             self.lang_proj = nn.Linear(self.lang_dim, d_model)
@@ -165,6 +176,7 @@ class TransformerAggregator(nn.Module):
         self,
         features: torch.Tensor,
         text: torch.Tensor | None = None,
+        demos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -205,6 +217,16 @@ class TransformerAggregator(nn.Module):
             tok = self.lang_proj(text.float().to(x.device)).unsqueeze(1) + self.lang_pos  # (B,1,d)
             x = torch.cat([tok, x], dim=1)
             seq_len = seq_len + 1
+        n_demo = 0
+        if self.demo_dim > 0 and demos is not None:
+            d_feat = demos[..., :self.demo_dim].float().to(x.device)
+            d_t = demos[..., self.demo_dim].float().to(x.device)
+            d_id = demos[..., self.demo_dim + 1].long().to(x.device).clamp(0, self.demo_id.num_embeddings - 1)
+            tf = torch.stack([d_t, torch.sin(2 * math.pi * d_t), torch.cos(2 * math.pi * d_t)], dim=-1)
+            dtok = self.demo_proj(d_feat) + self.demo_time(tf) + self.demo_id(d_id) + self.demo_type
+            x = torch.cat([dtok, x], dim=1)
+            n_demo = dtok.shape[1]
+            seq_len = seq_len + n_demo
         if self.use_causal_attention:
             mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=features.device)
             is_causal = True
@@ -223,8 +245,9 @@ class TransformerAggregator(nn.Module):
 
         # Tokens mode: mean-pool the N camera tokens at each timestep so the
         # per-timestep heads see one (B, T, d_model) feature per timestep.
-        if has_lang:
-            x = x[:, 1:]  # drop the language token before the per-timestep heads
+        n_strip = n_demo + (1 if has_lang else 0)
+        if n_strip:
+            x = x[:, n_strip:]  # drop demo + language tokens before the per-timestep heads
         if tokens_mode:
             x = x.reshape(B, T, N, self.d_model).mean(dim=2)  # (B, T, d_model)
 

@@ -393,6 +393,8 @@ def build_model(ablation: AblationConfig, d_model: int, device: torch.device,
     backbone_dim = d_model * n_cameras if fusion == "concat" else d_model
     model = TransformerAggregator(
         lang_dim=(512 if os.environ.get("WARP_LANG_COND", "0") == "1" else 0),
+        demo_dim=(768 if os.environ.get("WARP_DEMO_COND", "0") == "1" else 0),
+        demo_k=int(os.environ.get("WARP_DEMO_K", "2")), demo_m=int(os.environ.get("WARP_DEMO_M", "12")),
         d_model=d_model, n_heads=N_HEADS, n_layers=N_LAYERS,
         dropout=DROPOUT, max_seq_len=MAX_SEQ_LEN,
         backbone_dim=backbone_dim,
@@ -842,6 +844,11 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
                 ep_meta[str(ep.path)]["text_emb"] = _emb[ep.task or ""]
             print(f"[lang] {len(_tasks)} unique task strings embedded with {_tm} (dim {next(iter(_emb.values())).shape[0]})")
             del _clip; torch.cuda.empty_cache()
+        _didx = {}
+        if os.environ.get("WARP_DEMO_COND", "0") == "1":
+            for ep in episodes_for_precompute:
+                _didx.setdefault(ep.task or "", []).append(str(ep.path))
+            print(f"[demo] index over {len(_didx)} tasks; K={os.environ.get('WARP_DEMO_K','2')} demos x M={os.environ.get('WARP_DEMO_M','12')} frames, dropout {os.environ.get('WARP_DEMO_DROPOUT','0.5')}")
         torch.cuda.empty_cache()
         precompute_elapsed = time.time() - global_start
         print(f"Precompute: {precompute_elapsed:.0f}s (not counted against budget)")
@@ -853,6 +860,9 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
             feature_stride=feat_stride,
             fusion=fusion,
             return_text=os.environ.get("WARP_LANG_COND", "0") == "1",
+            return_demos=os.environ.get("WARP_DEMO_COND", "0") == "1",
+            demo_k=int(os.environ.get("WARP_DEMO_K", "2")), demo_m=int(os.environ.get("WARP_DEMO_M", "12")),
+            demo_index=_didx,
             aug_p=float(os.environ.get("WARP_AUG_P", "0.5")) if int(os.environ.get("WARP_AUG_VARIANTS", "0")) > 0 else 0.0,
         )
 
@@ -1029,6 +1039,9 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
     print("Starting training...")
     trainer = Trainer(
         lang_cond=(os.environ.get("WARP_LANG_COND", "0") == "1"),
+        demo_cond=(os.environ.get("WARP_DEMO_COND", "0") == "1"),
+        demo_dropout=float(os.environ.get("WARP_DEMO_DROPOUT", "0.5")),
+        demo_index=_didx,
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
