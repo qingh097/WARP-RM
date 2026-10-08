@@ -91,11 +91,14 @@ def load_checkpoint(checkpoint_path: str, device: torch.device,
     demo_dim = int(ckpt["model"]["demo_proj.weight"].shape[1]) if "demo_proj.weight" in state_keys else 0
     demo_k = int(ckpt["model"]["demo_id.weight"].shape[0]) if "demo_id.weight" in state_keys else 2
     demo_m = int(ckpt.get("demo_m", 12))
+    demo_vel = bool(ckpt.get("demo_vel", False))
+    if demo_dim and demo_vel:
+        demo_dim //= 2   # demo_proj consumes [feat | diff]
     if demo_dim:
-        print(f"  demo-conditioned checkpoint (demo_dim={demo_dim}, K={demo_k}, M={demo_m})")
+        print(f"  demo-conditioned checkpoint (demo_dim={demo_dim}, K={demo_k}, M={demo_m}, vel={demo_vel})")
     model = TransformerAggregator(
         lang_dim=lang_dim,
-        demo_dim=demo_dim, demo_k=demo_k, demo_m=demo_m,
+        demo_dim=demo_dim, demo_k=demo_k, demo_m=demo_m, demo_vel=demo_vel,
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         dropout=dropout, max_seq_len=max_seq_len,
         backbone_dim=backbone_dim,
