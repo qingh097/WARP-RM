@@ -97,6 +97,9 @@ class TransformerAggregator(nn.Module):
         # mode — concat/single state_dicts must have no camera_embed.* key.
         if fusion == "tokens":
             self.camera_embed = nn.Embedding(n_cameras, d_model)
+            # N(0,1) init (norm ~sqrt(d)=28) swamps the projected feature tokens (norm ~8) and the
+            # sinusoidal PE (~20): token-fusion runs sat at chance. Small init like a learned bias.
+            nn.init.normal_(self.camera_embed.weight, std=0.02)
 
         # Fixed sinusoidal positional encoding.
         pe = torch.zeros(1, max_seq_len, d_model)
