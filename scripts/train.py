@@ -1109,6 +1109,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
         "cameras": cameras,
         "fusion": fusion,
         "n_cameras": n_cameras,
+        "demo_k": int(os.environ.get("WARP_DEMO_K", "2")), "demo_m": int(os.environ.get("WARP_DEMO_M", "12")),
         "backbone_dim": model.backbone_dim,
     }
 

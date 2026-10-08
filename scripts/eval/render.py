@@ -86,8 +86,16 @@ def load_checkpoint(checkpoint_path: str, device: torch.device,
     lang_dim = int(ckpt["model"]["lang_proj.weight"].shape[1]) if "lang_proj.weight" in state_keys else 0
     if lang_dim:
         print(f"  language-conditioned checkpoint (lang_dim={lang_dim})")
+    # Demo-conditioned ckpts: rebuild the demo token path, otherwise strict=False
+    # silently drops demo_proj/demo_time/demo_id/demo_type and demos are ignored.
+    demo_dim = int(ckpt["model"]["demo_proj.weight"].shape[1]) if "demo_proj.weight" in state_keys else 0
+    demo_k = int(ckpt["model"]["demo_id.weight"].shape[0]) if "demo_id.weight" in state_keys else 2
+    demo_m = int(ckpt.get("demo_m", 12))
+    if demo_dim:
+        print(f"  demo-conditioned checkpoint (demo_dim={demo_dim}, K={demo_k}, M={demo_m})")
     model = TransformerAggregator(
         lang_dim=lang_dim,
+        demo_dim=demo_dim, demo_k=demo_k, demo_m=demo_m,
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         dropout=dropout, max_seq_len=max_seq_len,
         backbone_dim=backbone_dim,
