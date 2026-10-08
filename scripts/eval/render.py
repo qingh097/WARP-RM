@@ -103,6 +103,7 @@ def load_checkpoint(checkpoint_path: str, device: torch.device,
         use_causal_attention=use_causal,
         fusion=fusion,
         n_cameras=n_cameras,
+        wrist_pool=int(ckpt.get("wrist_pool", 1)),
     ).to(device)
     print(f"  Detected TransformerAggregator "
           f"(temporal_diffs={has_temporal_diffs}, attention={attention_mode}, "

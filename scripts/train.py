@@ -406,6 +406,7 @@ def build_model(ablation: AblationConfig, d_model: int, device: torch.device,
         use_causal_attention=use_causal_attention,
         fusion=fusion,
         n_cameras=n_cameras,
+        wrist_pool=int(os.environ.get("WARP_WRIST_POOL", "1")),
     ).to(device)
     # The abs head is always constructed but only supervised when the ablation
     # enables it; mark it so `has_abs_progress_head` doesn't surface an
@@ -1109,6 +1110,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
         "cameras": cameras,
         "fusion": fusion,
         "n_cameras": n_cameras,
+        "wrist_pool": int(os.environ.get("WARP_WRIST_POOL", "1")),
         "demo_k": int(os.environ.get("WARP_DEMO_K", "2")), "demo_m": int(os.environ.get("WARP_DEMO_M", "12")),
         "backbone_dim": model.backbone_dim,
     }

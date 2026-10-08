@@ -58,6 +58,7 @@ class TransformerAggregator(nn.Module):
         # Multi-camera fusion mode.
         fusion: str = "concat",
         n_cameras: int = 1,
+        wrist_pool: int = 1,
     ):
         super().__init__()
         self.d_model = d_model
@@ -81,6 +82,9 @@ class TransformerAggregator(nn.Module):
         self.use_causal_attention = use_causal_attention
         self.fusion = fusion
         self.n_cameras = n_cameras
+        # tokens mode: temporally average-pool every `wrist_pool` timesteps of each
+        # non-primary camera (wrist) so each wrist view costs T/wrist_pool tokens.
+        self.wrist_pool = int(wrist_pool)
 
         # In "tokens" mode, input_proj operates per-camera token.
         input_dim = backbone_dim * 2 if use_temporal_diffs else backbone_dim
@@ -170,6 +174,18 @@ class TransformerAggregator(nn.Module):
         # Shared time positional encoding.
         x = x + self.pos_embed[:, :T, :].unsqueeze(2)  # (1,T,1,d) broadcast
 
+        if self.wrist_pool > 1 and N > 1:
+            # [primary T tokens | each wrist camera pooled to ceil(T/p) tokens]
+            p = self.wrist_pool
+            prim = x[:, :, 0]                                   # (B,T,d)
+            wr = x[:, :, 1:]                                    # (B,T,N-1,d)
+            pad = (-T) % p
+            if pad:
+                wr = torch.cat([wr, wr[:, -1:].expand(B, pad, N - 1, self.d_model)], dim=1)
+            Tp = wr.shape[1] // p
+            wr = wr.reshape(B, Tp, p, N - 1, self.d_model).mean(dim=2)      # (B,Tp,N-1,d)
+            wr = wr.permute(0, 2, 1, 3).reshape(B, Tp * (N - 1), self.d_model)
+            return torch.cat([prim, wr], dim=1)                 # (B, T + Tp*(N-1), d)
         return x.reshape(B, T * N, self.d_model)
 
     def forward(
@@ -195,8 +211,8 @@ class TransformerAggregator(nn.Module):
         tokens_mode = self.fusion == "tokens" and features.dim() == 4
         if tokens_mode:
             B, T, N, _ = features.shape
-            x = self._build_token_sequence(features)  # (B, T*N, d_model)
-            seq_len = T * N
+            x = self._build_token_sequence(features)  # (B, T*N, d_model) or (B, T+Tp*(N-1), d) when wrist_pool>1
+            seq_len = x.shape[1]
         else:
             # concat / single-camera path — IDENTICAL to the original forward.
             _, T, _ = features.shape
@@ -249,7 +265,10 @@ class TransformerAggregator(nn.Module):
         if n_strip:
             x = x[:, n_strip:]  # drop demo + language tokens before the per-timestep heads
         if tokens_mode:
-            x = x.reshape(B, T, N, self.d_model).mean(dim=2)  # (B, T, d_model)
+            if self.wrist_pool > 1 and N > 1:
+                x = x[:, :T]  # primary-camera tokens carry the per-timestep output; wrist tokens were context
+            else:
+                x = x.reshape(B, T, N, self.d_model).mean(dim=2)  # (B, T, d_model)
 
         backbone_out = x  # (B, T, d_model)
 
