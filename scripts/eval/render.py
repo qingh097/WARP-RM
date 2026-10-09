@@ -203,6 +203,9 @@ class Args:
     sort_by: Literal["length", "name"] = "length"
     task: Optional[str] = None
     """Task text for language-conditioned checkpoints (applied to every rendered episode)."""
+    demo_repo: Optional[str] = None
+    """LeRobot v2.1 repo whose episodes serve as context demos (demo-conditioned ckpts); K demos drawn per rendered episode."""
+    demo_seed: int = 0
     """How to sort/select episodes."""
 
     gpu: Optional[int] = None
@@ -227,6 +230,28 @@ def main():
             print("  WARNING: language-conditioned checkpoint but no --task given; using empty text")
         text_t = torch.from_numpy(embed_tasks([_task], device)[_task]).to(device).unsqueeze(0)
         print(f"  task text: {_task!r}")
+
+    demos_t = None
+    if getattr(model, "demo_dim", 0) and args.demo_repo:
+        import random as _r
+        from warp_rm.data.lerobot_dataset import discover_lerobot_episodes
+        from warp_rm.data.dataset import build_demo_tokens
+        from warp_rm.utils.caching import precompute_features
+        from scripts.config import default_feature_cache_dir
+        bank = discover_lerobot_episodes(args.demo_repo, camera_key="top_camera-images-rgb", require_video=True)
+        bb, _ = build_backbone("dinov3"); bb = bb.to(device).eval()
+        bmeta = precompute_features(bank, bb, device, int(ckpt.get("feature_stride", 3)), 224,
+                                    cache_dir=default_feature_cache_dir("dinov3", int(ckpt.get("feature_stride", 3))),
+                                    backbone="dinov3", batch_size=512, mean=bb.MEAN, std=bb.STD, decode_workers=6,
+                                    mega_batch_episodes=4, crop_mode=ckpt.get("crop_mode", "center"))
+        del bb
+        _bank_task = bank[0].task or ""
+        index = {_bank_task: [str(e.path) for e in bank if str(e.path) in bmeta]}
+        _q = type("Q", (), {})(); _q.task = _bank_task; _q.path = "__query__"
+        toks = build_demo_tokens(_q, bmeta, index, model.demo_k, model.demo_m, "concat", rng=_r.Random(args.demo_seed),
+                                 exclude_self=True, vel=getattr(model, "demo_vel", False), dense=getattr(model, "demo_dense", None))
+        demos_t = torch.from_numpy(toks).to(device).unsqueeze(0)
+        print(f"  demo context: {model.demo_k} demos x {toks.shape[0]//model.demo_k} frames from {args.demo_repo} ({len(bank)} eps); tokens {tuple(toks.shape)}")
 
     source_standard_stride = ckpt.get("standard_stride_src", 45)
     crop_mode = ckpt.get("crop_mode", "squash")
@@ -321,7 +346,7 @@ def main():
                 out_fps=args.fps,
                 show_gt=args.show_gt,
                 crop_mode=crop_mode,
-                text=text_t,
+                text=text_t, demos=demos_t,
             )
         except Exception as e:
             import traceback
