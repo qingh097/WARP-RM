@@ -253,8 +253,34 @@ def split_episodes_quality_val(
     return remaining, val_episodes
 
 
+def demo_frame_indices(n_feat, m, dense=None, rng=None):
+    """Demo frame selection. `m` uniform frames spanning the episode; when dense=(n_seg, n_per, stride)
+    additionally `n_seg` randomly chosen sparse intervals get `n_per` consecutive frames `stride` feature
+    steps apart (stride 15 = the 45-source-frame standard step), starting at the interval's sparse frame.
+    Dense runs give the model the demo's appearance change per ~1x standard step, next to the sparse
+    whole-task coverage. Returns a sorted array of unique indices with a FIXED length m + n_seg*n_per."""
+    rng = rng or random
+    sparse = np.linspace(0, n_feat - 1, m).round().astype(int)
+    if not dense:
+        return sparse
+    n_seg, n_per, stride = dense
+    chosen = set(sparse.tolist())
+    segs = rng.sample(range(m - 1), min(n_seg, m - 1))
+    for si in segs:
+        a, b = int(sparse[si]), int(sparse[si + 1])
+        st = max(1, min(stride, (b - a) // n_per))         # shrink the stride so the run fits the interval
+        for j in range(1, n_per + 1):
+            idx = a + j * st
+            while idx in chosen and idx < n_feat - 1: idx += 1   # keep indices unique
+            chosen.add(min(idx, n_feat - 1))
+    out = sorted(chosen)
+    while len(out) < m + n_seg * n_per:                      # pad (tiny episodes) by repeating the last frame
+        out.append(out[-1])
+    return np.array(out[: m + n_seg * n_per], dtype=int)
+
+
 def build_demo_tokens(ep, ep_meta, demo_index, k, m, fusion="concat", rng=None, exclude_self=True,
-                      vel=False, feature_stride=3, source_standard_stride=45, window_size=32):
+                      vel=False, feature_stride=3, source_standard_stride=45, window_size=32, dense=None):
     """Demo context tokens for k demos of the same task (other episodes), m frames uniformly spanning each demo.
 
     vel=False (legacy): (k*m, D+2) rows = [feature (D) | normalised time in demo | demo id]
@@ -275,16 +301,17 @@ def build_demo_tokens(ep, ep_meta, demo_index, k, m, fusion="concat", rng=None, 
         arr = load_fused_features(ep_meta[p], fusion)
         if arr.ndim == 3:            # tokens fusion -> use the primary camera for demos
             arr = arr[:, 0]
-        idx = np.linspace(0, len(arr) - 1, m).round().astype(int)
+        idx = demo_frame_indices(len(arr), m, dense=dense if vel else None, rng=rng)
+        mm = len(idx)
         t = (idx / max(len(arr) - 1, 1)).astype(np.float32)
         f = arr[idx].astype(np.float32)
         if vel:
             d = np.zeros_like(f); d[1:] = f[1:] - f[:-1]
-            gap_src = np.zeros(m, np.float32); gap_src[1:] = np.diff(idx) * feature_stride
+            gap_src = np.zeros(mm, np.float32); gap_src[1:] = np.diff(idx) * feature_stride
             dt_std = gap_src / float((window_size - 1) * source_standard_stride)
-            rows.append(np.concatenate([f, d, t[:, None], dt_std[:, None], np.full((m, 1), di, np.float32)], axis=1))
+            rows.append(np.concatenate([f, d, t[:, None], dt_std[:, None], np.full((mm, 1), di, np.float32)], axis=1))
         else:
-            rows.append(np.concatenate([f, t[:, None], np.full((m, 1), di, np.float32)], axis=1))
+            rows.append(np.concatenate([f, t[:, None], np.full((mm, 1), di, np.float32)], axis=1))
     return np.concatenate(rows, 0)
 
 
@@ -315,9 +342,10 @@ class PrecomputedFeatureDataset(Dataset):
         demo_m: int = 12,
         demo_index: dict | None = None,
         demo_vel: bool = False,
+        demo_dense: tuple | None = None,
     ):
         self.return_demos = return_demos; self.demo_k = int(demo_k); self.demo_m = int(demo_m)
-        self.demo_vel = bool(demo_vel)
+        self.demo_vel = bool(demo_vel); self.demo_dense = tuple(demo_dense) if demo_dense else None
         self.demo_index = demo_index or {}   # task -> [str(ep.path)] with cached features
         self.return_text = return_text   # append ep_meta["text_emb"] as the LAST batch element
         self.aug_p = aug_p               # prob. of loading an augmented feature cache instead of the clean one
@@ -389,7 +417,7 @@ class PrecomputedFeatureDataset(Dataset):
 
         if self.return_demos:
             out.append(torch.from_numpy(build_demo_tokens(ep, self.ep_meta, self.demo_index, self.demo_k, self.demo_m, self.fusion,
-                                                          vel=self.demo_vel, feature_stride=self.feature_stride)))
+                                                          vel=self.demo_vel, feature_stride=self.feature_stride, dense=self.demo_dense)))
         if self.return_text:
             out.append(torch.from_numpy(np.asarray(meta["text_emb"], dtype=np.float32)))
         return tuple(out)

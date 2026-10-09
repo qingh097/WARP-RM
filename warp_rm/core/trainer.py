@@ -372,7 +372,7 @@ class Trainer:
         from ..data.dataset import build_demo_tokens
         import random as _r
         toks = build_demo_tokens(ep, self.ep_meta, self.demo_index, self.model.demo_k, self.model.demo_m,
-                                 getattr(self.model, "fusion", "concat"), rng=_r.Random(0), vel=getattr(self.model, "demo_vel", False))
+                                 getattr(self.model, "fusion", "concat"), rng=_r.Random(0), vel=getattr(self.model, "demo_vel", False), dense=getattr(self.model, "demo_dense", None))
         t = torch.from_numpy(toks).to(self.device).unsqueeze(0)
         return t.expand(n, -1, -1)
 

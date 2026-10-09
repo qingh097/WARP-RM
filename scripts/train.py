@@ -369,6 +369,12 @@ def _clip_text_embeds(clip, out):
     return clip.text_projection(out.pooler_output)
 
 
+def _demo_dense_env():
+    """WARP_DEMO_DENSE='n_seg,n_per,stride' -> dense demo runs inside sparse intervals (None = uniform only)."""
+    v = os.environ.get("WARP_DEMO_DENSE", "")
+    return tuple(int(x) for x in v.split(",")) if v else None
+
+
 def build_model(ablation: AblationConfig, d_model: int, device: torch.device,
                 first_frame_pe_only: bool = False,
                 rel_bin_min: float = -3.0,
@@ -396,6 +402,7 @@ def build_model(ablation: AblationConfig, d_model: int, device: torch.device,
         demo_dim=(768 if os.environ.get("WARP_DEMO_COND", "0") == "1" else 0),
         demo_k=int(os.environ.get("WARP_DEMO_K", "2")), demo_m=int(os.environ.get("WARP_DEMO_M", "12")),
         demo_vel=os.environ.get("WARP_DEMO_VEL", "0") == "1",
+        demo_dense=_demo_dense_env(),
         d_model=d_model, n_heads=N_HEADS, n_layers=N_LAYERS,
         dropout=DROPOUT, max_seq_len=MAX_SEQ_LEN,
         backbone_dim=backbone_dim,
@@ -866,6 +873,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
             return_demos=os.environ.get("WARP_DEMO_COND", "0") == "1",
             demo_k=int(os.environ.get("WARP_DEMO_K", "2")), demo_m=int(os.environ.get("WARP_DEMO_M", "12")),
             demo_vel=os.environ.get("WARP_DEMO_VEL", "0") == "1",
+            demo_dense=_demo_dense_env(),
             demo_index=_didx,
             aug_p=float(os.environ.get("WARP_AUG_P", "0.5")) if int(os.environ.get("WARP_AUG_VARIANTS", "0")) > 0 else 0.0,
         )
@@ -1115,6 +1123,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
         "wrist_pool": int(os.environ.get("WARP_WRIST_POOL", "1")),
         "demo_k": int(os.environ.get("WARP_DEMO_K", "2")), "demo_m": int(os.environ.get("WARP_DEMO_M", "12")),
         "demo_vel": os.environ.get("WARP_DEMO_VEL", "0") == "1",
+        "demo_dense": _demo_dense_env(),
         "backbone_dim": model.backbone_dim,
     }
 

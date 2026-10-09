@@ -45,6 +45,7 @@ class TransformerAggregator(nn.Module):
         demo_k: int = 2,
         demo_m: int = 12,
         demo_vel: bool = False,
+        demo_dense: tuple | None = None,
         # C51 relative progress bins
         n_rel_bins: int = 30,
         rel_bin_min: float = -3.0,
@@ -70,6 +71,7 @@ class TransformerAggregator(nn.Module):
         self.lang_dim = int(lang_dim)
         self.demo_dim = int(demo_dim); self.demo_k = int(demo_k); self.demo_m = int(demo_m)
         self.demo_vel = bool(demo_vel)  # demo rows carry [feat | diff | t | dt_std | id] (relative velocity)
+        self.demo_dense = tuple(demo_dense) if demo_dense else None  # (n_seg, n_per, stride): dense runs inside sparse intervals
         if self.demo_dim > 0:
             # demo conditioning: k*m tokens = proj(feature) + time(t) + id(demo) + type
             self.demo_proj = nn.Linear(self.demo_dim * (2 if self.demo_vel else 1), d_model)

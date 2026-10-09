@@ -99,6 +99,7 @@ def load_checkpoint(checkpoint_path: str, device: torch.device,
     model = TransformerAggregator(
         lang_dim=lang_dim,
         demo_dim=demo_dim, demo_k=demo_k, demo_m=demo_m, demo_vel=demo_vel,
+        demo_dense=(tuple(ckpt["demo_dense"]) if ckpt.get("demo_dense") else None),
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         dropout=dropout, max_seq_len=max_seq_len,
         backbone_dim=backbone_dim,
