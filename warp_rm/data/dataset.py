@@ -280,7 +280,8 @@ def demo_frame_indices(n_feat, m, dense=None, rng=None):
 
 
 def build_demo_tokens(ep, ep_meta, demo_index, k, m, fusion="concat", rng=None, exclude_self=True,
-                      vel=False, feature_stride=3, source_standard_stride=45, window_size=32, dense=None):
+                      vel=False, feature_stride=3, source_standard_stride=45, window_size=32, dense=None,
+                      labels=False, reverse_p=0.0):
     """Demo context tokens for k demos of the same task (other episodes), m frames uniformly spanning each demo.
 
     vel=False (legacy): (k*m, D+2) rows = [feature (D) | normalised time in demo | demo id]
@@ -302,14 +303,23 @@ def build_demo_tokens(ep, ep_meta, demo_index, k, m, fusion="concat", rng=None, 
         if arr.ndim == 3:            # tokens fusion -> use the primary camera for demos
             arr = arr[:, 0]
         idx = demo_frame_indices(len(arr), m, dense=dense if vel else None, rng=rng)
+        if labels and reverse_p > 0 and rng.random() < reverse_p:
+            idx = idx[::-1].copy()       # time-reversed demo: negative velocity labels, t runs 1 -> 0
         mm = len(idx)
         t = (idx / max(len(arr) - 1, 1)).astype(np.float32)
         f = arr[idx].astype(np.float32)
         if vel:
             d = np.zeros_like(f); d[1:] = f[1:] - f[:-1]
-            gap_src = np.zeros(mm, np.float32); gap_src[1:] = np.diff(idx) * feature_stride
+            gap_src = np.zeros(mm, np.float32); gap_src[1:] = np.diff(idx) * feature_stride   # signed
             dt_std = gap_src / float((window_size - 1) * source_standard_stride)
-            rows.append(np.concatenate([f, d, t[:, None], dt_std[:, None], np.full((mm, 1), di, np.float32)], axis=1))
+            cols = [f, d, t[:, None], dt_std[:, None], np.full((mm, 1), di, np.float32)]
+            if labels:
+                # explicit demo labels in the model's units: per-step velocity (1.0 = forward at standard
+                # speed, negative = reversed) and cumulative progress since the demo's first token
+                v_lab = dt_std * float(window_size - 1)
+                cum_lab = np.cumsum(dt_std).astype(np.float32)
+                cols += [v_lab[:, None], cum_lab[:, None]]
+            rows.append(np.concatenate(cols, axis=1))
         else:
             rows.append(np.concatenate([f, t[:, None], np.full((mm, 1), di, np.float32)], axis=1))
     return np.concatenate(rows, 0)
@@ -343,9 +353,12 @@ class PrecomputedFeatureDataset(Dataset):
         demo_index: dict | None = None,
         demo_vel: bool = False,
         demo_dense: tuple | None = None,
+        demo_labels: bool = False,
+        demo_reverse_p: float = 0.0,
     ):
         self.return_demos = return_demos; self.demo_k = int(demo_k); self.demo_m = int(demo_m)
         self.demo_vel = bool(demo_vel); self.demo_dense = tuple(demo_dense) if demo_dense else None
+        self.demo_labels = bool(demo_labels); self.demo_reverse_p = float(demo_reverse_p)
         self.demo_index = demo_index or {}   # task -> [str(ep.path)] with cached features
         self.return_text = return_text   # append ep_meta["text_emb"] as the LAST batch element
         self.aug_p = aug_p               # prob. of loading an augmented feature cache instead of the clean one
@@ -417,7 +430,8 @@ class PrecomputedFeatureDataset(Dataset):
 
         if self.return_demos:
             out.append(torch.from_numpy(build_demo_tokens(ep, self.ep_meta, self.demo_index, self.demo_k, self.demo_m, self.fusion,
-                                                          vel=self.demo_vel, feature_stride=self.feature_stride, dense=self.demo_dense)))
+                                                          vel=self.demo_vel, feature_stride=self.feature_stride, dense=self.demo_dense,
+                                                          labels=self.demo_labels, reverse_p=self.demo_reverse_p)))
         if self.return_text:
             out.append(torch.from_numpy(np.asarray(meta["text_emb"], dtype=np.float32)))
         return tuple(out)

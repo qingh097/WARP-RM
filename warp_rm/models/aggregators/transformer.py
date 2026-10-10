@@ -46,6 +46,7 @@ class TransformerAggregator(nn.Module):
         demo_m: int = 12,
         demo_vel: bool = False,
         demo_dense: tuple | None = None,
+        demo_labels: bool = False,
         # C51 relative progress bins
         n_rel_bins: int = 30,
         rel_bin_min: float = -3.0,
@@ -72,10 +73,11 @@ class TransformerAggregator(nn.Module):
         self.demo_dim = int(demo_dim); self.demo_k = int(demo_k); self.demo_m = int(demo_m)
         self.demo_vel = bool(demo_vel)  # demo rows carry [feat | diff | t | dt_std | id] (relative velocity)
         self.demo_dense = tuple(demo_dense) if demo_dense else None  # (n_seg, n_per, stride): dense runs inside sparse intervals
+        self.demo_labels = bool(demo_labels)  # demo rows end with [v_label | cum_label] (signed, model units)
         if self.demo_dim > 0:
             # demo conditioning: k*m tokens = proj(feature) + time(t) + id(demo) + type
             self.demo_proj = nn.Linear(self.demo_dim * (2 if self.demo_vel else 1), d_model)
-            self.demo_time = nn.Linear(5 if self.demo_vel else 3, d_model)
+            self.demo_time = nn.Linear((5 + (2 if self.demo_labels else 0)) if self.demo_vel else 3, d_model)
             self.demo_id = nn.Embedding(max(1, self.demo_k), d_model)
             self.demo_type = nn.Parameter(torch.zeros(1, 1, d_model))
         if self.lang_dim > 0:
@@ -248,8 +250,11 @@ class TransformerAggregator(nn.Module):
             if self.demo_vel:
                 d_dt = demos[..., nf + 1].float().to(x.device)          # label units per demo step
                 d_id = demos[..., nf + 2].long().to(x.device).clamp(0, self.demo_id.num_embeddings - 1)
-                tf = torch.stack([d_t, torch.sin(2 * math.pi * d_t), torch.cos(2 * math.pi * d_t),
-                                  d_dt, torch.log1p(d_dt * 31.0)], dim=-1)   # 31 = (window-1): 1.0 == standard speed
+                slog = torch.sign(d_dt) * torch.log1p(d_dt.abs() * 31.0)     # 31 = (window-1): 1.0 == standard speed
+                cols = [d_t, torch.sin(2 * math.pi * d_t), torch.cos(2 * math.pi * d_t), d_dt, slog]
+                if self.demo_labels:
+                    cols += [demos[..., nf + 3].float().to(x.device), demos[..., nf + 4].float().to(x.device)]
+                tf = torch.stack(cols, dim=-1)
             else:
                 d_id = demos[..., nf + 1].long().to(x.device).clamp(0, self.demo_id.num_embeddings - 1)
                 tf = torch.stack([d_t, torch.sin(2 * math.pi * d_t), torch.cos(2 * math.pi * d_t)], dim=-1)
