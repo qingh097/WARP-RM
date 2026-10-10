@@ -1124,6 +1124,7 @@ def run_experiment(ablation: AblationConfig, mode: str = "online",
         "demo_k": int(os.environ.get("WARP_DEMO_K", "2")), "demo_m": int(os.environ.get("WARP_DEMO_M", "12")),
         "demo_vel": os.environ.get("WARP_DEMO_VEL", "0") == "1",
         "demo_dense": _demo_dense_env(),
+        "demo_xor": os.environ.get("WARP_DEMO_XOR", "0") == "1",
         "backbone_dim": model.backbone_dim,
     }
 

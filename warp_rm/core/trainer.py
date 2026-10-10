@@ -90,6 +90,7 @@ class Trainer:
     ):
         self.lang_cond = lang_cond
         self.demo_cond = demo_cond; self.demo_dropout = float(demo_dropout); self.demo_index = demo_index or {}
+        self.demo_xor = os.environ.get("WARP_DEMO_XOR", "0") == "1"
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -182,6 +183,9 @@ class Trainer:
             demos = extras.pop().to(self.device) if (self.demo_cond and extras) else None
             if demos is not None and random.random() < self.demo_dropout:
                 demos = None   # demo dropout: the model must also work from text / frames alone
+            elif demos is not None and getattr(self, "demo_xor", False):
+                text = None    # XOR conditioning: when demos are given, the task text is withheld, so the
+                               # demos must carry task identity (otherwise text makes them redundant)
             if uses_abs and extras:
                 abs_labels = extras.pop(0).to(self.device)
             if self.loss_fn.completion_weight > 0 and extras:
@@ -379,6 +383,8 @@ class Trainer:
     def _text_for(self, ep, n: int = 1):
         if not getattr(self, "lang_cond", False):
             return None
+        if getattr(self, "demo_xor", False) and getattr(self, "demo_cond", False):
+            return None   # XOR: validation uses demos only (what the deployed demo-conditioned model sees)
         meta = self.ep_meta[str(ep.path)] if self.ep_meta else {}
         emb = meta.get("text_emb")
         if emb is None:
